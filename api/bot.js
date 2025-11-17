@@ -14,6 +14,7 @@ if (!BOT_TOKEN) {
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: false });
 const userPhotos = new Map();
+const pendingUploads = new Map(); // Store file URLs temporarily
 
 // Gmail transporter
 let transporter;
@@ -56,12 +57,17 @@ const handlePhoto = async (msg) => {
       userPhotos.set(userId, []);
     }
     
+    const uploadId = Date.now().toString();
     userPhotos.get(userId).push({
       url: fileUrl,
-      time: new Date()
+      time: new Date(),
+      uploadId: uploadId
     });
+
+    // Store temporarily for callback
+    pendingUploads.set(uploadId, fileUrl);
     
-    // Create keyboard
+    // Create keyboard with SHORT callback data
     const keyboard = {
       reply_markup: {
         inline_keyboard: []
@@ -69,8 +75,9 @@ const handlePhoto = async (msg) => {
     };
     
     if (transporter) {
+      // FIX: Use short upload ID instead of long file_id
       keyboard.reply_markup.inline_keyboard.push([
-        { text: '📧 Upload to Gmail', callback_data: `gmail_${photo.file_id}` }
+        { text: '📧 Upload to Gmail', callback_data: `gmail_${uploadId}` }
       ]);
     }
     
@@ -78,7 +85,7 @@ const handlePhoto = async (msg) => {
       { text: '❌ Close', callback_data: 'cancel' }
     ]);
     
-    // Send file URL to user (NO MARKDOWN)
+    // Send file URL to user
     await bot.sendMessage(chatId,
       `✅ Photo Received!\n\n` +
       `🔗 File URL:\n${fileUrl}\n\n` +
@@ -131,17 +138,23 @@ const uploadToGmail = async (fileUrl, fileName, chatId) => {
 const handleCallbackQuery = async (callbackQuery) => {
   const chatId = callbackQuery.message.chat.id;
   const data = callbackQuery.data;
+  const messageId = callbackQuery.message.message_id;
   
   try {
     if (data.startsWith('gmail_')) {
-      const fileId = data.replace('gmail_', '');
+      const uploadId = data.replace('gmail_', '');
       
       await bot.answerCallbackQuery(callbackQuery.id, { text: '📧 Uploading to Gmail...' });
       
-      const file = await bot.getFile(fileId);
-      const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
-      const fileExt = file.file_path.split('.').pop() || 'jpg';
-      const fileName = `photo_${Date.now()}.${fileExt}`;
+      // Get file URL from temporary storage
+      const fileUrl = pendingUploads.get(uploadId);
+      
+      if (!fileUrl) {
+        await bot.sendMessage(chatId, '❌ Upload session expired. Please send the photo again.');
+        return;
+      }
+      
+      const fileName = `photo_${Date.now()}.jpg`;
       
       const success = await uploadToGmail(fileUrl, fileName, chatId);
       
@@ -151,16 +164,29 @@ const handleCallbackQuery = async (callbackQuery) => {
           `📧 Sent to: ${GMAIL_USER}\n` +
           `📎 File: ${fileName}`
         );
+        
+        // Clean up
+        pendingUploads.delete(uploadId);
       } else {
         await bot.sendMessage(chatId, '❌ Failed to upload to Gmail');
       }
     } else if (data === 'cancel') {
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Closed' });
-      await bot.deleteMessage(chatId, callbackQuery.message.message_id);
+      await bot.deleteMessage(chatId, messageId);
+      
+      // Clean up any pending uploads
+      const userId = callbackQuery.from.id;
+      const userData = userPhotos.get(userId);
+      if (userData && userData.length > 0) {
+        const lastUpload = userData[userData.length - 1];
+        if (lastUpload.uploadId) {
+          pendingUploads.delete(lastUpload.uploadId);
+        }
+      }
     }
   } catch (error) {
     console.error('Callback query error:', error);
-    await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Error occurred during action.' });
+    await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Error occurred' });
   }
 };
 
@@ -171,7 +197,6 @@ const handleMessage = async (msg) => {
   if (text === '/start') {
     await handleStart(msg);
   } else {
-    // If user sends any other text, show start menu
     await handleStart(msg);
   }
 };
@@ -192,7 +217,8 @@ module.exports = async (req, res) => {
     return res.json({ 
       status: 'Bot is running!',
       users_tracked: userPhotos.size,
-      gmail_enabled: !!transporter
+      gmail_enabled: !!transporter,
+      pending_uploads: pendingUploads.size
     });
   }
   
