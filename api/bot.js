@@ -1,8 +1,5 @@
 const TelegramBot = require('node-telegram-bot-api');
 const nodemailer = require('nodemailer');
-// FIX: Added explicit require for node-fetch. This may not be strictly 
-// necessary in modern Vercel/Node.js environments, but ensures compatibility 
-// for the image download.
 const fetch = require('node-fetch');
 
 // Environment variables
@@ -15,15 +12,12 @@ if (!BOT_TOKEN) {
   process.exit(1);
 }
 
-// Ensure the bot is instantiated with the polling option set to false for webhooks
-// (Vercel automatically handles this, but good practice for serverless)
-const bot = new TelegramBot(BOT_TOKEN, { polling: false }); 
+const bot = new TelegramBot(BOT_TOKEN, { polling: false });
 const userPhotos = new Map();
 
 // Gmail transporter
 let transporter;
 if (GMAIL_USER && GMAIL_PASS) {
-  // FIX: Changed incorrect createTransporter to nodemailer.createTransport
   transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: {
@@ -40,10 +34,9 @@ const handleStart = async (msg) => {
   const chatId = msg.chat.id;
   
   await bot.sendMessage(chatId,
-    `📸 *Photo Upload Bot*\n\n` +
+    `📸 Photo Upload Bot\n\n` +
     `Send me a photo and I'll give you the file link!` +
-    (transporter ? `\n📧 I can also upload it to Gmail!` : ''),
-    { parse_mode: 'Markdown' }
+    (transporter ? `\n📧 I can also upload it to Gmail!` : '')
   );
 };
 
@@ -51,15 +44,11 @@ const handleStart = async (msg) => {
 const handlePhoto = async (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
-  // Get the largest photo size
-  const photo = msg.photo[msg.photo.length - 1]; 
+  const photo = msg.photo[msg.photo.length - 1];
   
   try {
     // Get file info
     const file = await bot.getFile(photo.file_id);
-    
-    // FIX: Removed BOT_TOKEN from the public file URL message for security.
-    // The link will still require the token to access, but it's not displayed.
     const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
     
     // Store photo info
@@ -89,13 +78,12 @@ const handlePhoto = async (msg) => {
       { text: '❌ Close', callback_data: 'cancel' }
     ]);
     
-    // Send file URL to user
+    // Send file URL to user (NO MARKDOWN)
     await bot.sendMessage(chatId,
-      `✅ *Photo Received!*\n\n` +
-      `🔗 *File URL:*\n${fileUrl}\n\n` + // Note: This direct link includes the token for *direct* access.
-      `📊 *Size:* ${(file.file_size / 1024).toFixed(1)} KB`,
+      `✅ Photo Received!\n\n` +
+      `🔗 File URL:\n${fileUrl}\n\n` +
+      `📊 Size: ${(file.file_size / 1024).toFixed(1)} KB`,
       { 
-        parse_mode: 'Markdown',
         reply_markup: keyboard.reply_markup
       }
     );
@@ -112,17 +100,16 @@ const uploadToGmail = async (fileUrl, fileName, chatId) => {
     // Download image
     const response = await fetch(fileUrl);
     
-    // Check for bad response before trying to read buffer
     if (!response.ok) {
         throw new Error(`Failed to download file: ${response.statusText}`);
     }
     
-    const buffer = await response.buffer(); // Use .buffer() for node-fetch
+    const buffer = await response.buffer();
     
     const mailOptions = {
       from: GMAIL_USER,
-      to: GMAIL_USER, // Sends to the same user defined in environment variable
-      subject: `📸 Telegram Photo - ${fileName}`,
+      to: GMAIL_USER,
+      subject: `Telegram Photo - ${fileName}`,
       text: `Photo uploaded from Telegram Bot\nFile: ${fileName}\nTime: ${new Date().toLocaleString()}`,
       attachments: [
         {
@@ -153,18 +140,16 @@ const handleCallbackQuery = async (callbackQuery) => {
       
       const file = await bot.getFile(fileId);
       const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
-      // Use the original file path extension if possible, or default to jpg/jpeg
-      const fileExt = file.file_path.split('.').pop() || 'jpg'; 
+      const fileExt = file.file_path.split('.').pop() || 'jpg';
       const fileName = `photo_${Date.now()}.${fileExt}`;
       
       const success = await uploadToGmail(fileUrl, fileName, chatId);
       
       if (success) {
         await bot.sendMessage(chatId,
-          `✅ *Uploaded to Gmail!*\n\n` +
+          `✅ Uploaded to Gmail!\n\n` +
           `📧 Sent to: ${GMAIL_USER}\n` +
-          `📎 File: ${fileName}`,
-          { parse_mode: 'Markdown' }
+          `📎 File: ${fileName}`
         );
       } else {
         await bot.sendMessage(chatId, '❌ Failed to upload to Gmail');
@@ -185,12 +170,15 @@ const handleMessage = async (msg) => {
   
   if (text === '/start') {
     await handleStart(msg);
+  } else {
+    // If user sends any other text, show start menu
+    await handleStart(msg);
   }
 };
 
 // Vercel handler
 module.exports = async (req, res) => {
-  // CORS headers for Vercel
+  // CORS headers
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
@@ -200,7 +188,6 @@ module.exports = async (req, res) => {
     return res.status(200).end();
   }
   
-  // Simple status check on GET
   if (req.method === 'GET') {
     return res.json({ 
       status: 'Bot is running!',
@@ -209,30 +196,24 @@ module.exports = async (req, res) => {
     });
   }
   
-  // Main webhook handler on POST
   if (req.method === 'POST') {
     try {
       const update = req.body;
       
       if (update.message) {
         if (update.message.photo) {
-          // Process photo messages
           await handlePhoto(update.message);
         } else if (update.message.text) {
-          // Process text messages
           await handleMessage(update.message);
         }
       } else if (update.callback_query) {
-        // Process inline button clicks
         await handleCallbackQuery(update.callback_query);
       }
       
-      // Crucial: Respond quickly to Telegram to acknowledge the update
-      return res.json({ ok: true }); 
+      return res.json({ ok: true });
     } catch (error) {
       console.error('Webhook processing error:', error);
-      // Respond with a 200 OK to Telegram even on error to prevent constant retries
-      return res.status(200).json({ error: error.message, acknowledged: true }); 
+      return res.status(200).json({ error: error.message, acknowledged: true });
     }
   }
   
