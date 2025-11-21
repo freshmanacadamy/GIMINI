@@ -87,7 +87,7 @@ const handlePhoto = async (msg) => {
     
     // Send file URL to user
     await bot.sendMessage(chatId,
-      `✅ Photo Received!\n\n` +
+      `✅ Photrrreeo Received!\n\n` +
       `🔗 File URL:\n${fileUrl}\n\n` +
       `📊 Size: ${(file.file_size / 1024).toFixed(1)} KB`,
       { 
